@@ -9,15 +9,13 @@ public class Main {
 	public static void main(String[] args) {
 		Main main = new Main();
 
-		System.out.println("Making a new pool");
+		System.out.println("Attempting simple run");
 
-		//System.out.println("Attempting simple run");
+		main.doSimpleRun();
 
-		//main.doSimpleRun();
+		//System.out.println("Attempting multithreaded run");
 
-		System.out.println("Attempting multithreaded run");
-
-		main.doMultithreadedRun();
+		//main.doMultithreadedRun();
 	}
 
 	private void doSimpleRun() {
@@ -76,7 +74,7 @@ public class Main {
 	}
 
 	private void doMultithreadedRun() {
-		final ConnectionPool pool = new ConnectionPoolImpl(getFakeFactory(), 1);
+		final ConnectionPool pool = new ConnectionPoolImpl(getFakeFactory(), 8);
 		Collection<Thread> threads = new ArrayList<Thread>();
 
 		for (int i = 0; i < 20; i++) {
@@ -104,7 +102,7 @@ public class Main {
 	}
 
 	public static void doRun(int threadId, ConnectionPool pool) {
-		int runs = 50;
+		int runs = 5;
 		System.out.println(threadId+": starting run");
 		while (runs > 0) {
 			Connection connection = pool.getConnection(100, TimeUnit.MILLISECONDS);
@@ -116,16 +114,18 @@ public class Main {
 			}else{
 				System.out.println(threadId + ": success! Got connection "+connection);
 			}
-			int randomVar = (int)System.currentTimeMillis() % 3;
+			int randomVar = new java.util.Random(System.currentTimeMillis()).nextInt() % 3;
 			switch (randomVar) {
 				case 0:
+					System.out.println(threadId + ": Leaking this connection "+connection);
 					connection = null; //let the connection be gc'd
 					break;
 				case 1:
+					System.out.println(threadId + ": Release connection "+connection);
 					pool.releaseConnection(connection); //let the connection be gc'd
 					break;
 				default:
-					System.out.println(threadId + ": Trying to garbage collect");
+					System.out.println(threadId + ": Calling garbage collector");
 					System.gc();
 			}
 			runs--;

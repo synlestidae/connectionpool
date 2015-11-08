@@ -49,7 +49,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
 
     private ConnectionFactory factory;
     private int maxConnections;
-    private int connectionsInExistence = 0;
+    private int connectionsOutsidePool = 0;
 
     private PrintStream log = System.out;
 
@@ -62,17 +62,33 @@ public class ConnectionPoolImpl implements ConnectionPool {
         this.maxConnections = maxConnections;
     }
 
+    /**
+     * Retrieves a connection from the pool. Runs through the following steps,
+     * in order, to reliably retrieve a connection:
+     * 1. Check if a new connection can be created
+     * 2. Check for a connection that has already been returned
+     * 3. Check if a connection has been garbage-collected.
+     * 4. Wait for a connection to be returned
+     * 
+     * If any step results in an active connection, it will be returned. If no step 
+     * procures a connection, null is returned.
+    */
     public Connection getConnection(long delay, TimeUnit units)
     {
         Connection connection = tryCreateNewConnection();
 
         if (connection == null) {
             log("No GC'd connections. Checking if a connection has been returned");
-            connection = tryGetQueuedConnectionNonBlocking();
+
+            //have to use this silly array parameter to work around  pass-by-value
+            //semantics of Java's numbers.
+            long[] delayArr = new long[]{delay};
+            connection = tryGetQueuedConnectionNonBlocking(delayArr, units);
+            delay = delayArr[0];
         }
 
         if (connection == null) {
-            log("Maximum connection limit reached. Attempting to get GC'd connection");
+            log("Maximum connection limit reached. Attempting to check for GC'd connection");
             connection = tryGetGarbagedConnection();
         }
 
@@ -81,8 +97,11 @@ public class ConnectionPoolImpl implements ConnectionPool {
             connection = tryGetQueuedConnection(delay, units);
         }
 
-        log("Exiting connection pool method. Idle connections "+idleConnections.size() + ", Current connections: "+connectionsInExistence);
-
+        synchronized (this) {
+            log("Exiting connection pool method. Idle connections "+idleConnections.size() + 
+                ", External connections: "+connectionsOutsidePool + 
+                " Idle connections: "+idleConnections.size());
+        }
         return connection;
     }
 
@@ -91,7 +110,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
     * been reached. Otherwise returns null.
     */
     private synchronized Connection tryCreateNewConnection() {
-        if (connectionsInExistence < maxConnections) {
+        if (connectionsOutsidePool + idleConnections.size() < maxConnections) {
             Connection connection;
             try {
                 connection = factory.newConnection();
@@ -100,22 +119,28 @@ public class ConnectionPoolImpl implements ConnectionPool {
                 return null;
             }
             inUseConnections.add(new WeakReference(connection, abandonedConnections));
-            connectionsInExistence++;
-            log("Created connection. There are now "+connectionsInExistence +" connections");
+            connectionsOutsidePool++;
+            log("Created connection. There are now "+connectionsOutsidePool +" connections");
             return connection;
         }else{
-            log("Cannot create new connection. The limit is "+maxConnections+" and there are currently "+connectionsInExistence +" connections");
+            log("Cannot create new connection. The limit is "+maxConnections+" and there are currently "+(connectionsOutsidePool + idleConnections.size()) +" connections");
             return null;
         }
     }
 
     /**
     * Wait for a connection to become available on the queue and return it,
-    * or return null if nothing becomes available.
+    * or return null if nothing is available.
     */
     private Connection tryGetQueuedConnection(long delay, TimeUnit units) {
         try {
-            return idleConnections.poll(delay, units);
+            Connection connection = idleConnections.poll(delay, units);
+            if (connection != null && !connection.testConnection()) {
+                //at this point the delay may not have expired. 
+                //would be nice to try again with a shorter delay!
+                return null;
+            }
+            return connection;
         }catch (InterruptedException e) {
             log("Interrupted while getting queued connection");
             return null;
@@ -124,13 +149,34 @@ public class ConnectionPoolImpl implements ConnectionPool {
 
     /**
     * Return a connection from queue if one is there, otherwise null.
-    * This method doesn't wait for a connection to be placed on the 
-    * queue.
+    * Will discard connections. This method doesn't wait for a connection 
+    * to be placed on the queue. It DOES re-poll the queue if the 
+    * connection it gets back is not active. To prevent this looping indefinitely,
+    * time limit parameters are used.
     */
-    private Connection tryGetQueuedConnectionNonBlocking() {
-        return idleConnections.poll();
+    private synchronized Connection tryGetQueuedConnectionNonBlocking(long[] delayArr, TimeUnit units) {
+        long delay = delayArr[0];
+
+        long timeA = System.currentTimeMillis();
+        Connection connection = idleConnections.poll();
+        long timeB = System.currentTimeMillis();
+
+        while (connection != null && !connection.testConnection()
+            && units.convert(timeB - timeA, TimeUnit.MILLISECONDS) <= delay) {
+            connection = idleConnections.poll();
+            timeB = System.currentTimeMillis();
+        }
+
+        delayArr[0] = delay;
+
+        return connection;
     }
 
+    /**
+    * Retrieve a GC'd connection and discard it, creating a new one in its
+    * place. An alternative implementation could re-use the connection --
+    * this method book-keeps, instead of recycling. 
+    */
     private synchronized Connection tryGetGarbagedConnection() {
         if (abandonedConnections.poll() != null) {
             log("A connection has been GC'd. A new connection will be created in its place");
@@ -139,7 +185,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
             }catch (InterruptedException e) {
                 return null;
             }
-            connectionsInExistence--;
+            connectionsOutsidePool--;
             return tryCreateNewConnection();
         }else{
             return null;
@@ -180,16 +226,19 @@ public class ConnectionPoolImpl implements ConnectionPool {
                 idleConnections.offer(connection);
                 log("Returned connection being recycled");
             }else{
-                connectionsInExistence = connectionsInExistence - 1;
+                synchronized (this) {
+                    connectionsOutsidePool = connectionsOutsidePool - 1;
+                }
                 log("Returned connection is dead");
             }
         }finally {
-            log("Exiting connection pool release method. Idle connections "+idleConnections.size() + ", Current connections: "+connectionsInExistence);
+            log("Exiting connection pool release method. Idle connections "+idleConnections.size() + 
+                ", External connections: "+connectionsOutsidePool);
         }
     }
 
     private void log(Object... logParams) {
-        if (maxConnections > 0) return;
+        //if (maxConnections > 0) return; //used to stop log
 
         for (Object obj : logParams) {
             log.print(obj);
