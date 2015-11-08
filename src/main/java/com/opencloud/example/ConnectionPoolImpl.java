@@ -62,9 +62,14 @@ public class ConnectionPoolImpl implements ConnectionPool {
         this.maxConnections = maxConnections;
     }
 
-    public synchronized Connection getConnection(long delay, TimeUnit units)
+    public Connection getConnection(long delay, TimeUnit units)
     {
         Connection connection = tryCreateNewConnection();
+
+        if (connection == null) {
+            log("No GC'd connections. Checking if a connection has been returned");
+            connection = tryGetQueuedConnectionNonBlocking();
+        }
 
         if (connection == null) {
             log("Maximum connection limit reached. Attempting to get GC'd connection");
@@ -72,7 +77,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
         }
 
         if (connection == null) {
-            log("No GC'd connections. Attempting to load connection from queue");
+            log("No GC'd connections. Attempting to wait for connection from queue");
             connection = tryGetQueuedConnection(delay, units);
         }
 
@@ -81,6 +86,10 @@ public class ConnectionPoolImpl implements ConnectionPool {
         return connection;
     }
 
+    /**
+    * Creates and returns a new connection if the connection limit has NOT
+    * been reached. Otherwise returns null.
+    */
     private synchronized Connection tryCreateNewConnection() {
         if (connectionsInExistence < maxConnections) {
             Connection connection;
@@ -100,7 +109,11 @@ public class ConnectionPoolImpl implements ConnectionPool {
         }
     }
 
-    private synchronized Connection tryGetQueuedConnection(long delay, TimeUnit units) {
+    /**
+    * Wait for a connection to become available on the queue and return it,
+    * or return null if nothing becomes available.
+    */
+    private Connection tryGetQueuedConnection(long delay, TimeUnit units) {
         try {
             return idleConnections.poll(delay, units);
         }catch (InterruptedException e) {
@@ -109,9 +122,18 @@ public class ConnectionPoolImpl implements ConnectionPool {
         }
     }
 
+    /**
+    * Return a connection from queue if one is there, otherwise null.
+    * This method doesn't wait for a connection to be placed on the 
+    * queue.
+    */
+    private Connection tryGetQueuedConnectionNonBlocking() {
+        return idleConnections.poll();
+    }
+
     private synchronized Connection tryGetGarbagedConnection() {
         if (abandonedConnections.poll() != null) {
-            log("A connection has been GC'd. A new connection will be created");
+            log("A connection has been GC'd. A new connection will be created in its place");
             try {
                 abandonedConnections.remove(1);
             }catch (InterruptedException e) {
@@ -124,44 +146,51 @@ public class ConnectionPoolImpl implements ConnectionPool {
         }
     }
         
-    public synchronized void releaseConnection(Connection connection)
+    public void releaseConnection(Connection connection)
     {
-        if (connection == null) {
-            log("User releasing null connection");
-            return;
-        }else if (idleConnections.contains(connection)) {
-            log("User releasing connection that is already idle");
-            return;
-        }
-
-        int indexOfOurConnection = -1, i = 0;
-        log("Checking whether this connection owned by the pool");
-        for (WeakReference<Connection> connectionRef : inUseConnections) {
-            if (connection.equals(connectionRef.get())) {
-                indexOfOurConnection = i;
-                break;
+        try {
+            log("User releasing a connection");
+            if (connection == null) {
+                log("User releasing null connection");
+                return;
+            }else if (idleConnections.contains(connection)) {
+                log("User releasing connection that is already idle");
+                return;
             }
-            i++;
-        }
 
-        if (indexOfOurConnection == -1) {
-            log("Connection is NOT part of pool");
-            return;
-        }else{
-            log("Connection is part of pool");
-            inUseConnections.remove(i);
-        }
+            int indexOfOurConnection = -1, i = 0;
+            log("Checking whether this connection owned by the pool");
+            for (WeakReference<Connection> connectionRef : inUseConnections) {
+                if (connection.equals(connectionRef.get())) {
+                    indexOfOurConnection = i;
+                    break;
+                }
+                i++;
+            }
 
-        if (connection.testConnection()) {
-            idleConnections.offer(connection);
-            log("Returned connection being recycled");
-        }else{
-            connectionsInExistence = connectionsInExistence - 1;
-            log("Returned connection is dead");
+            if (indexOfOurConnection == -1) {
+                log("Connection is NOT part of pool");
+                return;
+            }else{
+                log("Connection is part of pool");
+                inUseConnections.remove(i);
+            }
+
+            if (connection.testConnection()) {
+                idleConnections.offer(connection);
+                log("Returned connection being recycled");
+            }else{
+                connectionsInExistence = connectionsInExistence - 1;
+                log("Returned connection is dead");
+            }
+        }finally {
+            log("Exiting connection pool release method. Idle connections "+idleConnections.size() + ", Current connections: "+connectionsInExistence);
         }
     }
 
     private void log(Object... logParams) {
+        if (maxConnections > 0) return;
+
         for (Object obj : logParams) {
             log.print(obj);
             log.print(" ");
