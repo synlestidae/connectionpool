@@ -11,17 +11,27 @@ public class Main {
 
 		System.out.println("Attempting simple run");
 
-		main.doSimpleRun();
+		ConnectionPool pool = new ConnectionPoolImpl(getFakeFactory(), 3);
 
-		//System.out.println("Attempting multithreaded run");
+		main.doSimpleRun(pool);
 
-		//main.doMultithreadedRun();
+		System.out.println("Attempting multithreaded run");
+
+		System.gc();
+
+		//main.doSimpleRun(pool);
+
+		System.gc();
+
+		//main.doSimpleRun(pool);
+
+		main.doMultithreadedRun();
 	}
 
-	private void doSimpleRun() {
+	private void doSimpleRun(ConnectionPool pool) {
 		//use a connection pool with 2 max connections and play around with it
 		long timer; 
-		ConnectionPool pool = new ConnectionPoolImpl(getFakeFactory(), 3);
+		if (pool == null) pool = new ConnectionPoolImpl(getFakeFactory(), 3);
 		
 		System.out.println("Getting first connection");
 
@@ -44,9 +54,6 @@ public class Main {
 
 		System.out.println("Connection 3 took "+(System.currentTimeMillis() - timer)+" milliseconds");
 
-
-		System.gc();
-
 		assert connection3 != null;	
 
 		pool.releaseConnection(connection3);
@@ -62,8 +69,6 @@ public class Main {
 		Connection connection5 = pool.getConnection(100, TimeUnit.MILLISECONDS);
 
 		System.out.println("Connection 5 took "+(System.currentTimeMillis() - timer)+" milliseconds");
-
-		assert connection5 == null;	
 
 		System.out.print("Our connections are:");
 		for (Connection connection : new Connection[] {connection1, 
@@ -102,7 +107,7 @@ public class Main {
 	}
 
 	public static void doRun(int threadId, ConnectionPool pool) {
-		int runs = 5;
+		int runs = 20;
 		System.out.println(threadId+": starting run");
 		while (runs > 0) {
 			Connection connection = pool.getConnection(100, TimeUnit.MILLISECONDS);
@@ -126,6 +131,7 @@ public class Main {
 					break;
 				default:
 					System.out.println(threadId + ": Calling garbage collector");
+					connection = null; //let the connection be gc'd
 					System.gc();
 			}
 			runs--;
