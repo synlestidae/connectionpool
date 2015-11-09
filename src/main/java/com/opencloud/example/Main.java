@@ -119,20 +119,17 @@ public class Main {
 			}else{
 				System.out.println(threadId + ": success! Got connection "+connection);
 			}
-			int randomVar = new java.util.Random(System.currentTimeMillis()).nextInt() % 3;
+			int randomVar = new java.util.Random(System.currentTimeMillis()).nextInt() % 4;
 			switch (randomVar) {
 				case 0:
 					System.out.println(threadId + ": Leaking this connection "+connection);
 					connection = null; //let the connection be gc'd
-					break;
-				case 1:
-					System.out.println(threadId + ": Release connection "+connection);
-					pool.releaseConnection(connection); //let the connection be gc'd
+					System.gc();
 					break;
 				default:
-					System.out.println(threadId + ": Calling garbage collector");
-					connection = null; //let the connection be gc'd
-					System.gc();
+					System.out.println(threadId + ": Releasing collection :)");
+					pool.releaseConnection(connection); 
+					
 			}
 			runs--;
 		}

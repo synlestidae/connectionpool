@@ -193,45 +193,36 @@ public class ConnectionPoolImpl implements ConnectionPool {
     * this method book-keeps, instead of recycling. 
     */
     private synchronized Connection tryGetGarbagedConnection() {
-        //if (abandonedConnections.poll() != null) {
-            log("A connection has been GC'd. A new connection will be created in its place");
-            //try {
-                Reference<? extends Connection> connectionRef = abandonedConnections.poll();
-                
-                if (connectionRef != null && connectionRef.get() == null) {
-                    int i = 0, index = -1;
-                    for (Reference<? extends Connection> ref : inUseConnections) {
-                        if (ref.get() == null) {
-                            index = i;
-                            break;
-                        }
-                    }
-                    if (index >= 0) {
-                        inUseConnections.remove(index);
-                        log("Removed null ref from inUseConnections");
-                    }else{
-                        log("WARNING! Couldn't remove null GC'd connection from inUseConnections");
+        log("A connection has been GC'd. A new connection will be created in its place");
+            Reference<? extends Connection> connectionRef = abandonedConnections.poll();
+            
+            if (connectionRef != null && connectionRef.get() == null) {
+                int i = 0, index = -1;
+                for (Reference<? extends Connection> ref : inUseConnections) {
+                    if (ref.get() == null) {
+                        index = i;
+                        break;
                     }
                 }
-                else if (connectionRef != null) {
-                    if (!inUseConnections.remove(connectionRef)) {
-                        log("WARNING! Couldn't remove GC'd connection from inUseConnections");
-                        return null;
-                    }else{
-                        log("Removed connection ref");
-                    }
-                }else if (connectionRef == null) {
-                    log("WARNING! Expected GC'd connection but got none");
+                if (index >= 0) {
+                    inUseConnections.remove(index);
+                    log("Removed null ref from inUseConnections");
+                }else{
+                    log("WARNING! Couldn't remove null GC'd connection from inUseConnections");
+                }
+            }
+            else if (connectionRef != null) {
+                if (!inUseConnections.remove(connectionRef)) {
+                    log("WARNING! Couldn't remove GC'd connection from inUseConnections");
                     return null;
+                }else{
+                    log("Removed connection ref");
                 }
-
-            //}catch (InterruptedException e) {
-            //    return null;
-            //}
-            return tryCreateNewConnection();
-        //}else{
-        //    return null;
-        //}
+            }else if (connectionRef == null) {
+                log("No GC'd connection available");
+                return null;
+            }
+        return tryCreateNewConnection();
     }
         
     public void releaseConnection(Connection connection)
@@ -290,7 +281,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
     }
 
     private void log(Object... logParams) {
-        //if (maxConnections > 0) return; //used to stop log
+        if (maxConnections > 0) return; //used to stop log
 
         for (Object obj : logParams) {
             log.print(obj);
