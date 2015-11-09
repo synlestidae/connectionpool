@@ -30,7 +30,7 @@ import java.io.PrintStream;
  *   testConnection() check.
  * - Detect Connections that have been handed out to a caller, but where the
  *   caller has discarded the Connection object, and don't count them as
- *   "in use". (hint: have the pool store WeakReferences to in-use connections,
+ *   "in use". (hint: have the pool store SoftReferences to in-use connections,
  *   and use that to detect when they become only weakly reachable)
  *
  */
@@ -53,7 +53,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
 
     private PrintStream log = System.out;
 
-    private ArrayList<WeakReference<Connection>> inUseConnections = new ArrayList<WeakReference<Connection>>();
+    private ArrayList<SoftReference<Connection>> inUseConnections = new ArrayList<SoftReference<Connection>>();
 
     public ConnectionPoolImpl(ConnectionFactory factory,
                               int maxConnections)
@@ -75,36 +75,41 @@ public class ConnectionPoolImpl implements ConnectionPool {
     */
     public Connection getConnection(long delay, TimeUnit units)
     {
-        Connection connection = null;
+        try {
+            Connection connection = null;
 
-        synchronized (this) {
-            if (idleConnections.size() > 0) {
-                log("Checking if a connection has been returned");
-                long[] delayArr = new long[]{delay};
-                connection = tryGetQueuedConnectionNonBlocking(delayArr, units);
-                delay = delayArr[0];
+            synchronized (this) {
+                if (idleConnections.size() > 0) {
+                    log("Checking if a connection has been returned");
+                    long[] delayArr = new long[]{delay};
+                    connection = tryGetQueuedConnectionNonBlocking(delayArr, units);
+                    delay = delayArr[0];
+                }
             }
-        }
 
-        if (connection == null) {
-            connection = tryCreateNewConnection();
-        }
+            if (connection == null) {
+                connection = tryCreateNewConnection();
+            }
 
-        if (connection == null) {
-            log("Maximum connection limit reached. Attempting to check for GC'd connection");
-            connection = tryGetGarbagedConnection();
-        }
+            if (connection == null) {
+                log("Maximum connection limit reached. Attempting to check for GC'd connection");
+                connection = tryGetGarbagedConnection();
+            }
 
-        if (connection == null) {
-            log("No GC'd connections. Attempting to wait for connection from queue");
-            connection = tryGetQueuedConnection(delay, units);
-        }
+            if (connection == null) {
+                log("No GC'd connections. Attempting to wait for connection from queue");
+                connection = tryGetQueuedConnection(delay, units);
+            }
 
-        synchronized (this) {
-            log("Exiting connection pool method. Idle connections "+idleConnections.size() + 
+            synchronized (this) {
+                log("Exiting connection pool method. Idle connections "+idleConnections.size() + 
+                    ", External connections: "+inUseConnections.size());
+            }
+            return connection;
+        }finally {
+            log("Exiting connection pool getConnection method. Idle connections "+idleConnections.size() + 
                 ", External connections: "+inUseConnections.size());
         }
-        return connection;
     }
 
     /**
@@ -120,7 +125,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
                 log("Connection exception occurred. Could not create connection.", e);
                 return null;
             }
-            inUseConnections.add(new WeakReference(connection, abandonedConnections));
+            inUseConnections.add(new SoftReference(connection));
             log("Created connection. There are now "+(inUseConnections.size() + idleConnections.size()) +" connections");
             return connection;
         }else{
@@ -143,7 +148,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
             }
             
             if (connection != null) {
-                inUseConnections.add(new WeakReference(connection, abandonedConnections));
+                //inUseConnections.add(new SoftReference(connection, abandonedConnections));
                 log("Got gueued connection");
             }else{
                 log("Could not get queued connection");
@@ -176,7 +181,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
         }
 
         if (connection != null) {
-            inUseConnections.add(new WeakReference(connection, abandonedConnections));
+            //inUseConnections.add(new SoftReference(connection, abandonedConnections));
             log("Got gueued connection");
         }else{
             log("Could not get queued connection");
@@ -193,36 +198,55 @@ public class ConnectionPoolImpl implements ConnectionPool {
     * this method book-keeps, instead of recycling. 
     */
     private synchronized Connection tryGetGarbagedConnection() {
-        log("A connection has been GC'd. A new connection will be created in its place");
-            Reference<? extends Connection> connectionRef = abandonedConnections.poll();
-            
-            if (connectionRef != null && connectionRef.get() == null) {
-                int i = 0, index = -1;
-                for (Reference<? extends Connection> ref : inUseConnections) {
-                    if (ref.get() == null) {
-                        index = i;
-                        break;
-                    }
-                }
-                if (index >= 0) {
-                    inUseConnections.remove(index);
-                    log("Removed null ref from inUseConnections");
-                }else{
-                    log("WARNING! Couldn't remove null GC'd connection from inUseConnections");
+        log("Checking for a GC'd connection");
+        int i = 0, index = -1;
+        for (Reference<? extends Connection> ref : inUseConnections) {
+            if (ref.get() == null) {
+                index = i;
+                break;
+            }
+            i++;
+        }
+        if (index != -1) {
+            log("Found a GC'd connection");
+            inUseConnections.remove(index);
+            return tryCreateNewConnection();
+        }else{
+            log("GC'd connection not available");
+            return null;
+        }
+        /*Reference<? extends Connection> connectionRef = abandonedConnections.poll();
+        
+        if (connectionRef != null && connectionRef.get() == null) {
+            log("Garbaged connection available. Cannot get original ref though");
+            int i = 0, index = -1;
+            for (Reference<? extends Connection> ref : inUseConnections) {
+                if (ref.get() == null) {
+                    index = i;
+                    break;
                 }
             }
-            else if (connectionRef != null) {
-                if (!inUseConnections.remove(connectionRef)) {
-                    log("WARNING! Couldn't remove GC'd connection from inUseConnections");
-                    return null;
-                }else{
-                    log("Removed connection ref");
-                }
-            }else if (connectionRef == null) {
-                log("No GC'd connection available");
+            if (index >= 0) {
+                inUseConnections.remove(index);
+                log("Removed null ref from inUseConnections");
+            }else{
+                log("WARNING! Couldn't remove null GC'd connection from inUseConnections");
+            }
+            return tryCreateNewConnection();
+        }
+        else if (connectionRef != null) {
+            if (!inUseConnections.remove(connectionRef)) {
+                log("WARNING! Couldn't remove GC'd connection from inUseConnections");
                 return null;
+            }else{
+                log("Removed connection ref");
+                return tryCreateNewConnection();
             }
-        return tryCreateNewConnection();
+        }
+        else{
+            log("GC'd NOT AVAILABLE");
+            return null;
+        }*/
     }
         
     public void releaseConnection(Connection connection)
@@ -261,7 +285,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
             return false;
         }
 
-        for (WeakReference<Connection> connectionRef : inUseConnections) {
+        for (SoftReference<Connection> connectionRef : inUseConnections) {
             if ((connection == null && connectionRef.get() == null)
                 || connection.equals(connectionRef.get())) {
                 indexOfOurConnection = i;
@@ -281,7 +305,7 @@ public class ConnectionPoolImpl implements ConnectionPool {
     }
 
     private void log(Object... logParams) {
-        if (maxConnections > 0) return; //used to stop log
+        //if (maxConnections > 0) return; //used to stop log
 
         for (Object obj : logParams) {
             log.print(obj);

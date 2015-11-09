@@ -79,7 +79,7 @@ public class Main {
 	}
 
 	private void doMultithreadedRun() {
-		final ConnectionPool pool = new ConnectionPoolImpl(getFakeFactory(), 8);
+		final ConnectionPool pool = new ConnectionPoolImpl(getFakeFactory(), 1);
 		Collection<Thread> threads = new ArrayList<Thread>();
 
 		for (int i = 0; i < 20; i++) {
@@ -114,24 +114,31 @@ public class Main {
 			if (connection == null) {
 				System.out.println(threadId + ": failed to get a pooled connection.");
 			}
-			else if (!connection.testConnection()) {
-				System.out.println(threadId + ": got connection but it expired.");
-			}else{
-				System.out.println(threadId + ": success! Got connection "+connection);
-			}
-			int randomVar = new java.util.Random(System.currentTimeMillis()).nextInt() % 4;
-			switch (randomVar) {
-				case 0:
-					System.out.println(threadId + ": Leaking this connection "+connection);
-					connection = null; //let the connection be gc'd
-					System.gc();
-					break;
-				default:
-					System.out.println(threadId + ": Releasing collection :)");
-					pool.releaseConnection(connection); 
-					
+			else {
+				if (!connection.testConnection()) {
+					System.out.println(threadId + ": got connection but it expired.");
+				}else{
+					System.out.println(threadId + ": success! Got connection "+connection);
+				}
+				int randomVar = new java.util.Random(System.currentTimeMillis()).nextInt() % 4;
+				switch (randomVar) {
+					case 0:
+						System.out.println(threadId + ": Leaking this connection "+connection);
+						connection = null; //let the connection be gc'd
+						System.gc();
+						break;
+					default:
+						System.out.println(threadId + ": Releasing collection :)");
+						pool.releaseConnection(connection); 
+						
+				}
 			}
 			runs--;
+			try {
+				Thread.sleep(200);
+			}catch (InterruptedException e) {
+				//meh
+			}
 		}
 	}
 
