@@ -136,13 +136,14 @@ public class Main {
 	}
 
 	private static ConnectionFactory getFakeFactory() {
+		final long startTime = System.currentTimeMillis();
 		return new ConnectionFactory() {
 			@Override
 			public Connection newConnection() {
 				return new Connection() {
 					@Override
 					public boolean testConnection() {
-						return true;
+						return (System.currentTimeMillis() - startTime < 2000);
 					}
 				};
 			}
